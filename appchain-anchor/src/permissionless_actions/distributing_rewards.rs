@@ -21,7 +21,7 @@ impl AppchainAnchor {
         validator_set_histories: &mut LookupArray<ValidatorSetOfEra>,
         appchain_message_nonce: u32,
         era_number: u64,
-        unprofitable_validator_ids: Vec<String>,
+        unprofitable_validator_ids: &Vec<String>,
     ) -> MultiTxsOperationProcessingResult {
         if !validator_set_histories.contains(&era_number) {
             return MultiTxsOperationProcessingResult::Error(format!(
@@ -37,7 +37,10 @@ impl AppchainAnchor {
         let mut unprofitable_validator_ids_in_near = Vec::<AccountId>::new();
         let validator_profiles = self.validator_profiles.get().unwrap();
         for id_in_appchain in unprofitable_validator_ids {
-            let account_id_in_appchain = AccountIdInAppchain::new(Some(id_in_appchain.clone()));
+            let account_id_in_appchain = AccountIdInAppchain::new(
+                Some(id_in_appchain.clone()),
+                &self.appchain_template_type,
+            );
             match validator_profiles.get_by_id_in_appchain(&account_id_in_appchain.to_string()) {
                 Some(validator_profile) => {
                     if validator_set.contains_validator(&validator_profile.validator_id) {
@@ -74,12 +77,12 @@ impl AppchainAnchor {
         let appchain_settings = self.appchain_settings.get().unwrap();
         let mut result = self.internal_mint_wrapped_appchain_token(
             None,
-            env::current_account_id(),
-            appchain_settings.era_reward,
+            &env::current_account_id(),
+            &appchain_settings.era_reward,
             appchain_message_nonce,
             processing_context,
         );
-        if result.eq(&MultiTxsOperationProcessingResult::Ok) {
+        if result.is_ok() {
             result = MultiTxsOperationProcessingResult::NeedMoreGas;
         }
         result
@@ -119,7 +122,7 @@ impl AppchainAnchor {
                 let mut delegator_index = distributing_delegator_index.0;
                 let era_reward = self.appchain_settings.get().unwrap().era_reward;
                 while processing_context.used_gas_of_current_function_call()
-                    < GAS_CAP_FOR_MULTI_TXS_PROCESSING
+                    < Gas::ONE_TERA.mul(T_GAS_CAP_FOR_MULTI_TXS_PROCESSING)
                 {
                     match self.distribute_reward_in_validator_set(
                         appchain_message_nonce,
@@ -162,21 +165,22 @@ impl AppchainAnchor {
                 let protocol_settings = self.protocol_settings.get().unwrap();
                 let mut next_validator_set = self.next_validator_set.get().unwrap();
                 while processing_context.used_gas_of_current_function_call()
-                    < GAS_CAP_FOR_MULTI_TXS_PROCESSING
+                    < Gas::ONE_TERA.mul(T_GAS_CAP_FOR_MULTI_TXS_PROCESSING)
                 {
                     if unprofitable_validator_index.0
                         >= unprofitable_validators.len().try_into().unwrap()
                     {
-                        processing_context.clear_distributing_reward_era_number();
                         validator_set
                             .set_processing_status(ValidatorSetProcessingStatus::Completed);
                         validator_set_histories.insert(&era_number, &validator_set);
-                        return MultiTxsOperationProcessingResult::Ok;
+                        return MultiTxsOperationProcessingResult::NeedMoreGas;
                     }
                     let validator_id = unprofitable_validators
                         .get(usize::try_from(unprofitable_validator_index.0).unwrap())
                         .unwrap();
-                    if next_validator_set.contains_validator(validator_id) {
+                    if validator_set.contains_validator(validator_id)
+                        && next_validator_set.contains_validator(validator_id)
+                    {
                         let start_checking_index = match era_number
                             >= u64::from(protocol_settings.maximum_allowed_unprofitable_era_count)
                         {
@@ -221,7 +225,19 @@ impl AppchainAnchor {
                 validator_set_histories.insert(&era_number, &validator_set);
                 MultiTxsOperationProcessingResult::NeedMoreGas
             }
-            ValidatorSetProcessingStatus::Completed => MultiTxsOperationProcessingResult::Ok,
+            ValidatorSetProcessingStatus::Completed => {
+                self.record_appchain_message_processing_result(
+                    &AppchainMessageProcessingResult::Ok {
+                        nonce: processing_context.processing_nonce().unwrap_or(0),
+                        message: Some(format!(
+                            "Completed distributing era rewards for validator set '{}'.",
+                            era_number
+                        )),
+                    },
+                );
+                processing_context.clear_distributing_reward_era_number();
+                MultiTxsOperationProcessingResult::Ok
+            }
         }
     }
     //
@@ -260,7 +276,7 @@ impl AppchainAnchor {
             reward_distribution_records.insert(
                 appchain_message_nonce,
                 validator_set.era_number(),
-                &String::new(),
+                &None,
                 &validator.validator_id,
             );
             self.reward_distribution_records
@@ -273,7 +289,7 @@ impl AppchainAnchor {
         if !reward_distribution_records.contains_record(
             appchain_message_nonce,
             validator_set.era_number(),
-            &delegator.delegator_id,
+            &Some(delegator.delegator_id.clone()),
             &delegator.validator_id,
         ) {
             let delegator_reward = (total_reward_of_validator - validator_commission_reward)
@@ -288,7 +304,7 @@ impl AppchainAnchor {
             reward_distribution_records.insert(
                 appchain_message_nonce,
                 validator_set.era_number(),
-                &delegator.delegator_id,
+                &Some(delegator.delegator_id),
                 &delegator.validator_id,
             );
             self.reward_distribution_records
@@ -300,7 +316,7 @@ impl AppchainAnchor {
     fn add_reward_for_validator(
         &mut self,
         validator_set: &mut ValidatorSetOfEra,
-        validator_id: &String,
+        validator_id: &AccountId,
         amount: u128,
     ) {
         let validator_reward = match validator_set.get_validator_rewards_of(validator_id) {
@@ -324,8 +340,8 @@ impl AppchainAnchor {
     fn add_reward_for_delegator(
         &mut self,
         validator_set: &mut ValidatorSetOfEra,
-        delegator_id: &String,
-        validator_id: &String,
+        delegator_id: &AccountId,
+        validator_id: &AccountId,
         amount: u128,
     ) {
         let delegator_reward =
