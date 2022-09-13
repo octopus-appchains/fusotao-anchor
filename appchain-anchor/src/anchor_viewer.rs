@@ -7,6 +7,14 @@ impl AnchorViewer for AppchainAnchor {
         ANCHOR_VERSION.to_string()
     }
     //
+    fn get_appchain_template_type(&self) -> AppchainTemplateType {
+        self.appchain_template_type.clone()
+    }
+    //
+    fn get_owner_pk(&self) -> PublicKey {
+        self.owner_pk.clone()
+    }
+    //
     fn get_anchor_settings(&self) -> AnchorSettings {
         self.anchor_settings.get().unwrap()
     }
@@ -31,6 +39,10 @@ impl AnchorViewer for AppchainAnchor {
         self.near_fungible_tokens.get().unwrap().to_vec()
     }
     //
+    fn get_wrapped_appchain_nfts(&self) -> Vec<WrappedAppchainNFT> {
+        self.wrapped_appchain_nfts.get().unwrap().to_vec()
+    }
+    //
     fn get_appchain_state(&self) -> AppchainState {
         self.appchain_state.clone()
     }
@@ -49,11 +61,6 @@ impl AnchorViewer for AppchainAnchor {
                 .index_range(),
             index_range_of_validator_set_history: self
                 .validator_set_histories
-                .get()
-                .unwrap()
-                .index_range(),
-            index_range_of_anchor_event_history: self
-                .anchor_event_histories
                 .get()
                 .unwrap()
                 .index_range(),
@@ -118,33 +125,6 @@ impl AnchorViewer for AppchainAnchor {
             }
         };
         self.staking_histories.get().unwrap().get(&index.0)
-    }
-    //
-    fn get_index_range_of_anchor_event_history(&self) -> IndexRange {
-        self.anchor_event_histories.get().unwrap().index_range()
-    }
-    //
-    fn get_anchor_event_history(&self, index: Option<U64>) -> Option<AnchorEventHistory> {
-        let index = match index {
-            Some(index) => index,
-            None => {
-                self.anchor_event_histories
-                    .get()
-                    .unwrap()
-                    .index_range()
-                    .end_index
-            }
-        };
-        self.anchor_event_histories.get().unwrap().get(&index.0)
-    }
-    //
-    fn get_anchor_event_histories(
-        &self,
-        start_index: U64,
-        quantity: Option<U64>,
-    ) -> Vec<AnchorEventHistory> {
-        let anchor_event_histories = self.anchor_event_histories.get().unwrap();
-        anchor_event_histories.get_slice_of(&start_index.0, quantity.map(|q| q.0))
     }
     //
     fn get_index_range_of_appchain_notification_history(&self) -> IndexRange {
@@ -508,7 +488,10 @@ impl AnchorViewer for AppchainAnchor {
         &self,
         validator_id_in_appchain: String,
     ) -> Option<ValidatorProfile> {
-        let formatted_id = AccountIdInAppchain::new(Some(validator_id_in_appchain.clone()));
+        let formatted_id = AccountIdInAppchain::new(
+            Some(validator_id_in_appchain.clone()),
+            &self.appchain_template_type,
+        );
         formatted_id.assert_valid();
         self.validator_profiles
             .get()
@@ -520,7 +503,6 @@ impl AnchorViewer for AppchainAnchor {
         if let Some(light_client) = self.beefy_light_client_state.get() {
             if let Some(commitment) = light_client.get_latest_commitment() {
                 return Some(AppchainCommitment {
-                    payload: commitment.payload,
                     block_number: commitment.block_number,
                     validator_set_id: U64::from(commitment.validator_set_id),
                 });
@@ -567,7 +549,7 @@ impl AnchorViewer for AppchainAnchor {
     //
     fn get_appchain_message_of(&self, nonce: u32) -> Option<AppchainMessage> {
         let appchain_messages = self.appchain_messages.get().unwrap();
-        appchain_messages.get_message(nonce)
+        appchain_messages.get_message(&nonce)
     }
     //
     fn get_appchain_messages(
